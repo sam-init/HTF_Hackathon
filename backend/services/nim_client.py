@@ -50,7 +50,9 @@ class NIMClient:
         }
 
         try:
-            timeout = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=5.0)
+            # Increased read timeout to 600s (10 mins) — the new richer README prompt
+            # causes the model to write much more content, which takes longer to stream back.
+            timeout = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=5.0)
             with httpx.Client(timeout=timeout) as client:
                 response = client.post(url, headers=headers, json=payload)
                 response.raise_for_status()
