@@ -1,43 +1,48 @@
-"""
-agents/performance_agent.py
----------------------------
-Detects performance anti-patterns: N+1 queries, blocking I/O in async,
-unnecessary re-renders, memory leaks, inefficient data structures, etc.
-"""
-from typing import List, Dict, Any
-from agents.base_agent import BaseReviewAgent
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from agents.base_agent import AgentFinding, BaseAgent
 
 
-def _format_diff_for_prompt(diff_files: List[Dict[str, Any]]) -> str:
-    parts = []
-    for df in diff_files:
-        added = "\n".join(f"  L{ln}: {code}" for ln, code in df["added_lines"][:80])
-        parts.append(f"### File: {df['file']}\n```\n{added}\n```")
-    return "\n\n".join(parts)
+class PerformanceAgent(BaseAgent):
+    name = "Performance"
 
+    def analyze(self, parsed_files: list[dict[str, Any]], persona: str) -> list[AgentFinding]:
+        findings: list[AgentFinding] = []
 
-class PerformanceAgent(BaseReviewAgent):
-    name = "PerformanceAgent"
+        for item in parsed_files:
+            lines = item["content"].splitlines()
+            joined = "\n".join(lines)
 
-    def build_prompt(self, diff_files: List[Dict[str, Any]], meta: Dict[str, Any]) -> str:
-        diff_text = _format_diff_for_prompt(diff_files)
-        return f"""Analyse the following PR diff for performance issues.
+            nested_loop = re.search(r"for\s+.+:\n(?:\s{2,}|\t)+for\s+.+:", joined)
+            if nested_loop:
+                line = joined[: nested_loop.start()].count("\n") + 1
+                finding = self._emit(
+                    file=item["path"],
+                    line=line,
+                    issue_title="Nested Loop Hot Path",
+                    explanation="Nested loops can lead to quadratic behavior on large input sets.",
+                    severity="medium",
+                    fix_suggestion="Consider indexing data structures (dict/set) or precomputing lookups.",
+                    confidence=0.79,
+                )
+                if finding:
+                    findings.append(finding)
 
-PR: {meta.get('repo_full')} #{meta.get('pr_number')} — {meta.get('pr_title')}
+            for i, line in enumerate(lines, start=1):
+                if "for " in line and i < len(lines) and "open(" in lines[i]:
+                    finding = self._emit(
+                        file=item["path"],
+                        line=i,
+                        issue_title="I/O Per Iteration",
+                        explanation="Opening files inside loops increases I/O overhead significantly.",
+                        severity="medium",
+                        fix_suggestion="Open file handles outside the loop or batch I/O operations.",
+                        confidence=0.81,
+                    )
+                    if finding:
+                        findings.append(finding)
 
-Look specifically for:
-1. N+1 database query patterns (queries inside loops)
-2. Missing database indexes implied by new queries
-3. Blocking/synchronous I/O in async context
-4. Redundant computation that should be cached
-5. Inefficient data structures (O(n) lookups where O(1) is possible)
-6. Large payloads loaded into memory at once (should be streamed)
-7. Unbounded loops or missing pagination
-8. Unoptimised React re-renders (missing useMemo/useCallback)
-9. Missing connection pooling
-
-Added lines:
-{diff_text}
-
-Return JSON array. Each finding: file, line (integer), issue, fix_suggestion, severity.
-"""
+        return findings[:8]

@@ -1,161 +1,96 @@
-"""
-docs/parser.py
---------------
-Parses Python source files into a structured AST-based representation:
-  Module → Classes → Methods / Functions → Dependencies
+from __future__ import annotations
 
-Uses Python's built-in `ast` module (no external tools needed).
-"""
 import ast
-import os
-from typing import List, Dict, Any, Optional
+import re
+from pathlib import Path
+from typing import Any
+
+from docs.repo_loader import read_text_safe
+
+IMPORT_PATTERNS = {
+    ".py": re.compile(r"^(?:from\s+([\w\.]+)\s+import|import\s+([\w\.]+))", re.MULTILINE),
+    ".js": re.compile(r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\(['\"]([^'\"]+)['\"]\))"),
+    ".ts": re.compile(r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\(['\"]([^'\"]+)['\"]\))"),
+    ".tsx": re.compile(r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\(['\"]([^'\"]+)['\"]\))"),
+    ".jsx": re.compile(r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\(['\"]([^'\"]+)['\"]\))"),
+}
 
 
-def parse_python_file(source_code: str, file_path: str) -> Dict[str, Any]:
-    """
-    Parse a single Python file into a structured dict.
-
-    Returns:
-        {
-          "file": "path/to/file.py",
-          "module_docstring": "...",
-          "imports": ["os", "sys", ...],
-          "classes": [
-            {
-              "name": "MyClass",
-              "docstring": "...",
-              "bases": ["BaseClass"],
-              "methods": [
-                {
-                  "name": "my_method",
-                  "args": ["self", "x", "y"],
-                  "returns": "str",
-                  "docstring": "...",
-                  "lineno": 42,
-                  "source": "def my_method(...): ..."
-                }
-              ]
-            }
-          ],
-          "functions": [
-            {
-              "name": "helper",
-              "args": [...],
-              "returns": "None",
-              "docstring": "...",
-              "lineno": 10,
-              "source": "def helper(): ..."
-            }
-          ]
-        }
-    """
+def _parse_python_symbols(code: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    functions: list[dict[str, Any]] = []
+    classes: list[dict[str, Any]] = []
     try:
-        tree = ast.parse(source_code)
-    except SyntaxError as e:
-        return {
-            "file": file_path,
-            "error": f"SyntaxError: {e}",
-            "classes": [],
-            "functions": [],
-            "imports": [],
-        }
+        tree = ast.parse(code)
+    except SyntaxError:
+        return functions, classes
 
-    lines = source_code.splitlines()
-    module_docstring = ast.get_docstring(tree) or ""
-
-    # Collect top-level imports
-    imports = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imports.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            for alias in node.names:
-                imports.append(f"{module}.{alias.name}")
+        if isinstance(node, ast.FunctionDef):
+            functions.append(
+                {
+                    "name": node.name,
+                    "line": node.lineno,
+                    "end_line": getattr(node, "end_lineno", node.lineno),
+                    "args": [arg.arg for arg in node.args.args],
+                }
+            )
+        elif isinstance(node, ast.ClassDef):
+            classes.append(
+                {
+                    "name": node.name,
+                    "line": node.lineno,
+                    "end_line": getattr(node, "end_lineno", node.lineno),
+                    "methods": [n.name for n in node.body if isinstance(n, ast.FunctionDef)],
+                }
+            )
+    return functions, classes
 
-    # Collect top-level classes
-    classes = []
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            classes.append(_parse_class(node, lines))
 
-    # Collect top-level functions (not inside classes)
-    functions = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            functions.append(_parse_function(node, lines))
+def _parse_generic_symbols(code: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    fn_pattern = re.compile(r"(?:function\s+(\w+)\s*\(|const\s+(\w+)\s*=\s*\(|def\s+(\w+)\s*\()")
+    cls_pattern = re.compile(r"(?:class\s+(\w+))")
+
+    functions: list[dict[str, Any]] = []
+    classes: list[dict[str, Any]] = []
+    for i, line in enumerate(code.splitlines(), start=1):
+        f_match = fn_pattern.search(line)
+        if f_match:
+            name = next((g for g in f_match.groups() if g), "anonymous")
+            functions.append({"name": name, "line": i, "end_line": i, "args": []})
+        c_match = cls_pattern.search(line)
+        if c_match:
+            classes.append({"name": c_match.group(1), "line": i, "end_line": i, "methods": []})
+    return functions, classes
+
+
+def parse_file(path: Path) -> dict[str, Any]:
+    code = read_text_safe(path)
+    ext = path.suffix.lower()
+
+    if ext == ".py":
+        functions, classes = _parse_python_symbols(code)
+    else:
+        functions, classes = _parse_generic_symbols(code)
+
+    pattern = IMPORT_PATTERNS.get(ext)
+    imports: list[str] = []
+    if pattern:
+        for match in pattern.findall(code):
+            if isinstance(match, tuple):
+                imports.extend([x for x in match if x])
+            elif match:
+                imports.append(match)
 
     return {
-        "file": file_path,
-        "module_docstring": module_docstring,
-        "imports": list(set(imports)),
-        "classes": classes,
+        "path": str(path),
+        "language": ext.lstrip("."),
+        "imports": sorted(set(imports)),
         "functions": functions,
+        "classes": classes,
+        "line_count": len(code.splitlines()),
+        "content": code,
     }
 
 
-def _parse_function(node: ast.FunctionDef, lines: List[str]) -> Dict[str, Any]:
-    """Extract metadata from a function/method AST node."""
-    args = [arg.arg for arg in node.args.args]
-    returns = ""
-    if node.returns:
-        try:
-            returns = ast.unparse(node.returns)
-        except Exception:
-            returns = ""
-
-    # Grab source lines for this function
-    start = node.lineno - 1
-    end = node.end_lineno if hasattr(node, "end_lineno") else start + 10
-    source_snippet = "\n".join(lines[start:end])
-
-    return {
-        "name": node.name,
-        "args": args,
-        "returns": returns,
-        "docstring": ast.get_docstring(node) or "",
-        "lineno": node.lineno,
-        "is_async": isinstance(node, ast.AsyncFunctionDef),
-        "source": source_snippet,
-    }
-
-
-def _parse_class(node: ast.ClassDef, lines: List[str]) -> Dict[str, Any]:
-    """Extract metadata from a class AST node including all its methods."""
-    bases = []
-    for base in node.bases:
-        try:
-            bases.append(ast.unparse(base))
-        except Exception:
-            pass
-
-    methods = []
-    for item in node.body:
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            methods.append(_parse_function(item, lines))
-
-    return {
-        "name": node.name,
-        "docstring": ast.get_docstring(node) or "",
-        "bases": bases,
-        "methods": methods,
-        "lineno": node.lineno,
-    }
-
-
-def parse_repo(file_dict: Dict[str, str]) -> List[Dict[str, Any]]:
-    """
-    Parse all Python files in a repo.
-
-    Args:
-        file_dict: {relative_path: source_code}
-
-    Returns:
-        List of parsed file dicts (one per .py file)
-    """
-    parsed = []
-    for file_path, source in file_dict.items():
-        if file_path.endswith(".py"):
-            parsed.append(parse_python_file(source, file_path))
-    return parsed
+def parse_repository(files: list[Path]) -> list[dict[str, Any]]:
+    return [parse_file(path) for path in files]

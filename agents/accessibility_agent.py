@@ -1,63 +1,47 @@
-"""
-agents/accessibility_agent.py
-------------------------------
-Reviews frontend code for WCAG 2.1 accessibility violations:
-missing alt text, ARIA labels, keyboard navigation, color contrast, etc.
-Skips non-frontend files automatically.
-"""
-from typing import List, Dict, Any
-from agents.base_agent import BaseReviewAgent
+from __future__ import annotations
 
-# File extensions where accessibility checks are relevant
-FRONTEND_EXTENSIONS = {".html", ".jsx", ".tsx", ".vue", ".svelte", ".css", ".scss"}
+import re
+from typing import Any
+
+from agents.base_agent import AgentFinding, BaseAgent
 
 
-def _is_frontend_file(file_path: str) -> bool:
-    return any(file_path.endswith(ext) for ext in FRONTEND_EXTENSIONS)
+class AccessibilityAgent(BaseAgent):
+    name = "Accessibility"
 
+    def analyze(self, parsed_files: list[dict[str, Any]], persona: str) -> list[AgentFinding]:
+        findings: list[AgentFinding] = []
 
-def _format_diff_for_prompt(diff_files: List[Dict[str, Any]]) -> str:
-    parts = []
-    for df in diff_files:
-        if not _is_frontend_file(df["file"]):
-            continue
-        added = "\n".join(f"  L{ln}: {code}" for ln, code in df["added_lines"][:80])
-        parts.append(f"### File: {df['file']}\n```\n{added}\n```")
-    return "\n\n".join(parts)
+        for item in parsed_files:
+            if not item["path"].endswith((".tsx", ".jsx", ".html")):
+                continue
 
+            lines = item["content"].splitlines()
+            for i, line in enumerate(lines, start=1):
+                if "<img" in line and "alt=" not in line:
+                    finding = self._emit(
+                        file=item["path"],
+                        line=i,
+                        issue_title="Image Missing Alt Text",
+                        explanation="Images without alt text reduce accessibility for screen reader users.",
+                        severity="high",
+                        fix_suggestion="Add a meaningful alt attribute describing content or use alt=\"\" for decorative images.",
+                        confidence=0.93,
+                    )
+                    if finding:
+                        findings.append(finding)
 
-class AccessibilityAgent(BaseReviewAgent):
-    name = "AccessibilityAgent"
+                if re.search(r"<div[^>]*onClick=", line) and "role=" not in line:
+                    finding = self._emit(
+                        file=item["path"],
+                        line=i,
+                        issue_title="Clickable Div Without Role",
+                        explanation="Interactive div elements should include semantic role and keyboard support.",
+                        severity="medium",
+                        fix_suggestion="Use a button element or add role, tabIndex, and keyboard handlers.",
+                        confidence=0.88,
+                    )
+                    if finding:
+                        findings.append(finding)
 
-    async def run(self, diff_files: List[Dict[str, Any]], meta: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # Only run if the PR touches frontend files
-        has_frontend = any(_is_frontend_file(df["file"]) for df in diff_files)
-        if not has_frontend:
-            return []
-        return await super().run(diff_files, meta)
-
-    def build_prompt(self, diff_files: List[Dict[str, Any]], meta: Dict[str, Any]) -> str:
-        diff_text = _format_diff_for_prompt(diff_files)
-        if not diff_text:
-            return "No frontend files in this PR. Return []."
-
-        return f"""Review the following frontend code for WCAG 2.1 accessibility violations.
-
-PR: {meta.get('repo_full')} #{meta.get('pr_number')} — {meta.get('pr_title')}
-
-Check for:
-1. <img> elements missing alt attribute
-2. Form inputs missing associated <label> or aria-label
-3. Interactive elements (div/span with onClick) missing role and keyboard handler
-4. Missing focus indicators (outline: none without replacement)
-5. Insufficient color contrast (hardcoded low-contrast colors)
-6. Missing skip-navigation links on full-page components
-7. ARIA roles used incorrectly
-8. Inaccessible modal/dialog (missing focus trap, aria-modal)
-9. Links with non-descriptive text ("click here", "read more")
-
-Frontend files changed:
-{diff_text}
-
-Return JSON array. Each finding: file, line (integer), issue, fix_suggestion, severity.
-"""
+        return findings[:8]

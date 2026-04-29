@@ -1,48 +1,27 @@
-"""
-rag/embedder.py
----------------
-Converts text chunks into vector embeddings using a lightweight
-sentence-transformers model that runs locally (free, no API call needed).
+from __future__ import annotations
 
-Model: all-MiniLM-L6-v2 (~80MB) – fast and good quality for code.
-"""
-import logging
-from typing import List
-import numpy as np
-from sentence_transformers import SentenceTransformer
-
-logger = logging.getLogger(__name__)
-
-# Loaded once at module import and cached in memory
-_MODEL_NAME = "all-MiniLM-L6-v2"
-_model: SentenceTransformer | None = None
+import math
+import re
 
 
-def _get_model() -> SentenceTransformer:
-    """Lazy-load the embedding model (cached singleton)."""
-    global _model
-    if _model is None:
-        logger.info(f"[Embedder] Loading model: {_MODEL_NAME}")
-        _model = SentenceTransformer(_MODEL_NAME)
-    return _model
+class SimpleEmbedder:
+    """Deterministic hashed bag-of-words embedding for in-memory retrieval."""
+
+    def __init__(self, dim: int = 256) -> None:
+        self.dim = dim
+
+    def embed(self, text: str) -> list[float]:
+        tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{1,30}", text.lower())
+        vec = [0.0] * self.dim
+        if not tokens:
+            return vec
+
+        for tok in tokens:
+            vec[hash(tok) % self.dim] += 1.0
+
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / norm for v in vec]
 
 
-def embed_texts(texts: List[str]) -> np.ndarray:
-    """
-    Embed a list of strings into a float32 numpy array of shape (N, dim).
-    Uses batched inference for efficiency.
-    """
-    model = _get_model()
-    embeddings = model.encode(
-        texts,
-        batch_size=32,
-        show_progress_bar=False,
-        convert_to_numpy=True,
-        normalize_embeddings=True,  # L2 normalise → cosine similarity = dot product
-    )
-    return embeddings.astype(np.float32)
-
-
-def embed_single(text: str) -> np.ndarray:
-    """Embed a single query string. Returns shape (dim,)."""
-    return embed_texts([text])[0]
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    return sum(x * y for x, y in zip(a, b))

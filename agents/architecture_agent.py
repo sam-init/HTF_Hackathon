@@ -1,45 +1,44 @@
-"""
-agents/architecture_agent.py
------------------------------
-Reviews architectural concerns: SOLID violations, circular dependencies,
-layering violations, god classes, and improper abstraction.
-"""
-from typing import List, Dict, Any
-from agents.base_agent import BaseReviewAgent
+from __future__ import annotations
+
+from typing import Any
+
+from agents.base_agent import AgentFinding, BaseAgent
 
 
-def _format_diff_for_prompt(diff_files: List[Dict[str, Any]]) -> str:
-    parts = []
-    for df in diff_files:
-        added = "\n".join(f"  L{ln}: {code}" for ln, code in df["added_lines"][:60])
-        parts.append(f"### File: {df['file']}\n```\n{added}\n```")
-    return "\n\n".join(parts)
+class ArchitectureAgent(BaseAgent):
+    name = "Architecture"
 
+    def analyze(self, parsed_files: list[dict[str, Any]], persona: str) -> list[AgentFinding]:
+        findings: list[AgentFinding] = []
 
-class ArchitectureAgent(BaseReviewAgent):
-    name = "ArchitectureAgent"
+        for item in parsed_files:
+            line_count = item.get("line_count", 0)
+            fn_count = len(item.get("functions", []))
 
-    def build_prompt(self, diff_files: List[Dict[str, Any]], meta: Dict[str, Any]) -> str:
-        diff_text = _format_diff_for_prompt(diff_files)
-        return f"""Analyse the following PR diff for architectural and design issues.
+            if line_count > 650:
+                finding = self._emit(
+                    file=item["path"],
+                    line=1,
+                    issue_title="Oversized Module",
+                    explanation="Large modules become difficult to reason about and test.",
+                    severity="medium",
+                    fix_suggestion="Split this module by domain responsibility and expose a slim interface layer.",
+                    confidence=0.83,
+                )
+                if finding:
+                    findings.append(finding)
 
-PR: {meta.get('repo_full')} #{meta.get('pr_number')} — {meta.get('pr_title')}
+            if fn_count > 35:
+                finding = self._emit(
+                    file=item["path"],
+                    line=1,
+                    issue_title="High Function Density",
+                    explanation="Many functions in a single file suggests mixed responsibilities.",
+                    severity="medium",
+                    fix_suggestion="Group related functions into submodules by feature or abstraction layer.",
+                    confidence=0.8,
+                )
+                if finding:
+                    findings.append(finding)
 
-Focus on:
-1. SOLID principle violations
-   - Single Responsibility: classes/functions doing too many things
-   - Open/Closed: modifications require changing core logic
-   - Dependency Inversion: high-level modules depending on low-level details
-2. God classes (classes with >10 methods or >300 lines)
-3. Circular imports or bidirectional dependencies
-4. Business logic leaking into presentation/transport layer
-5. Missing abstractions (repeated complex logic that should be a service)
-6. Incorrect layering (e.g., DB calls in a route handler with no service layer)
-7. Tight coupling between unrelated modules
-8. Global mutable state
-
-Added lines:
-{diff_text}
-
-Return JSON array. Each finding: file, line (integer), issue, fix_suggestion, severity.
-"""
+        return findings[:6]

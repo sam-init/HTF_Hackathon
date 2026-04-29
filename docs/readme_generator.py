@@ -1,210 +1,160 @@
-"""
-docs/readme_generator.py
-------------------------
-Generates a comprehensive README.md for a repository using:
-  - Parsed AST data (modules, classes, functions)
-  - NIM LLM for natural language sections
-  - RAG pipeline for context-aware summaries
-  - Mermaid diagrams from graph_builder
+from __future__ import annotations
 
-Persona modes control the tone and detail level:
-  - intern:    simple language, lots of explanation, step-by-step
-  - student:   educational tone, explains patterns and why
-  - frontend:  focuses on UI components, props, events
-  - backend:   focuses on API endpoints, data flow, services
-"""
-import logging
-from typing import List, Dict, Any, Literal
-from openai import AsyncOpenAI
-from docs.graph_builder import generate_mermaid_flowchart
-from config.settings import get_settings
+from collections import Counter
+from typing import Any
 
-logger = logging.getLogger(__name__)
-settings = get_settings()
 
-PersonaMode = Literal["intern", "student", "frontend", "backend"]
-
-PERSONA_INSTRUCTIONS = {
-    "intern": (
-        "Write for a junior developer who just joined the team. "
-        "Use simple language. Explain all acronyms. "
-        "Include step-by-step setup instructions with exact commands. "
-        "Add 'What this does' explanations for each module."
-    ),
-    "student": (
-        "Write for a CS student learning from this codebase. "
-        "Explain design patterns used and why they were chosen. "
-        "Include a 'Learning Points' section. Be educational."
-    ),
-    "frontend": (
-        "Focus on UI components, props, state management, and event flow. "
-        "Skip backend/infrastructure details. "
-        "Include component hierarchy and data flow diagrams."
-    ),
-    "backend": (
-        "Focus on API endpoints, request/response shapes, database schema, "
-        "service layer design, and system architecture. "
-        "Include API reference table with all endpoints."
-    ),
+PERSONA_HINTS = {
+    "Intern": "Use simple language, explain why each step matters, and include learning tips.",
+    "Student": "Balance conceptual clarity with practical usage examples.",
+    "Frontend Developer": "Highlight UI architecture, component structure, and API integration details.",
+    "Backend Developer": "Focus on service boundaries, data flow, performance, and deployment details.",
 }
 
 
-def _build_api_reference(parsed_files: List[Dict[str, Any]]) -> str:
-    """Build a markdown API reference table from parsed classes and functions."""
-    lines = ["## 📚 API Reference\n"]
-
-    for pf in parsed_files:
-        if not (pf.get("classes") or pf.get("functions")):
-            continue
-        lines.append(f"### `{pf['file']}`\n")
-
-        for cls in pf.get("classes", []):
-            lines.append(f"#### Class: `{cls['name']}`")
-            if cls["docstring"]:
-                lines.append(f"> {cls['docstring'].splitlines()[0]}\n")
-            if cls["bases"]:
-                lines.append(f"**Inherits:** {', '.join(cls['bases'])}\n")
-
-            public_methods = [m for m in cls["methods"] if not m["name"].startswith("_")]
-            if public_methods:
-                lines.append("| Method | Args | Returns | Description |")
-                lines.append("|--------|------|---------|-------------|")
-                for m in public_methods:
-                    args = ", ".join(m["args"])
-                    desc = m["docstring"].splitlines()[0] if m["docstring"] else "*undocumented*"
-                    lines.append(f"| `{m['name']}` | `{args}` | `{m['returns'] or 'None'}` | {desc} |")
-            lines.append("")
-
-        for fn in pf.get("functions", []):
-            if fn["name"].startswith("_"):
-                continue
-            args = ", ".join(fn["args"])
-            desc = fn["docstring"].splitlines()[0] if fn["docstring"] else "*undocumented*"
-            lines.append(f"#### `{fn['name']}({args})` → `{fn['returns'] or 'None'}`")
-            lines.append(f"> {desc}\n")
-
-    return "\n".join(lines)
+def build_repo_facts(parsed_files: list[dict[str, Any]]) -> dict[str, Any]:
+    langs = Counter(item["language"] for item in parsed_files)
+    total_functions = sum(len(item["functions"]) for item in parsed_files)
+    total_classes = sum(len(item["classes"]) for item in parsed_files)
+    return {
+        "languages": dict(langs),
+        "file_count": len(parsed_files),
+        "function_count": total_functions,
+        "class_count": total_classes,
+    }
 
 
-def _detect_doc_rot(parsed_files: List[Dict[str, Any]]) -> str:
-    """
-    Doc rot detection: find functions/classes with missing or trivial docstrings.
-    Returns a markdown warning section.
-    """
-    issues = []
-    for pf in parsed_files:
-        for fn in pf.get("functions", []):
-            if not fn["docstring"] or len(fn["docstring"]) < 10:
-                issues.append(f"- `{pf['file']}` → `{fn['name']}()` — missing docstring")
-        for cls in pf.get("classes", []):
-            if not cls["docstring"]:
-                issues.append(f"- `{pf['file']}` → class `{cls['name']}` — missing docstring")
-            for m in cls["methods"]:
-                if not m["name"].startswith("_") and not m["docstring"]:
-                    issues.append(f"- `{pf['file']}` → `{cls['name']}.{m['name']}()` — missing docstring")
+def _module_role(item: dict[str, Any]) -> str:
+    path = item["path"].lower()
+    imports = " ".join(item.get("imports", [])).lower()
+    fn_count = len(item.get("functions", []))
+    cls_count = len(item.get("classes", []))
 
-    if not issues:
-        return ""
-
-    lines = ["\n## ⚠️ Doc Rot Detected\n"]
-    lines.append(f"The following {len(issues)} public symbols are missing documentation:\n")
-    lines.extend(issues[:20])  # Cap at 20 items
-    if len(issues) > 20:
-        lines.append(f"\n*...and {len(issues) - 20} more*")
-    return "\n".join(lines)
+    if any(key in path for key in ("main", "app.py", "server", "index.ts", "index.js")):
+        return "Likely entrypoint or application bootstrap."
+    if any(key in path for key in ("route", "controller", "api")):
+        return "API routing or request/response boundary."
+    if any(key in path for key in ("component", ".tsx", ".jsx", "ui/")):
+        return "UI/component layer."
+    if "fastapi" in imports or "flask" in imports:
+        return "Backend service layer."
+    if cls_count > fn_count:
+        return "Class-oriented domain logic."
+    if fn_count > 0:
+        return "Function-oriented utility/business logic."
+    return "Support/configuration module."
 
 
-async def generate_readme(
-    parsed_files: List[Dict[str, Any]],
-    repo_name: str,
-    persona: PersonaMode = "backend",
-    extra_context: str = "",
-) -> str:
-    """
-    Generate a full README.md string.
-
-    Args:
-        parsed_files: output of docs.parser.parse_repo()
-        repo_name: e.g., "owner/repo-name"
-        persona: controls tone and focus
-        extra_context: any additional context (e.g., from RAG retrieval)
-
-    Returns:
-        Complete README.md content as a string
-    """
-    client = AsyncOpenAI(
-        base_url=settings.nvidia_base_url,
-        api_key=settings.nvidia_api_key,
-    )
-
-    persona_instr = PERSONA_INSTRUCTIONS.get(persona, PERSONA_INSTRUCTIONS["backend"])
-
-    # Build a summary of the repo structure for the LLM
-    structure_summary = []
-    for pf in parsed_files[:15]:  # limit to avoid token overflow
-        classes_str = ", ".join(cls["name"] for cls in pf.get("classes", []))
-        funcs_str = ", ".join(fn["name"] for fn in pf.get("functions", []))
-        line = f"- `{pf['file']}`: classes=[{classes_str}], functions=[{funcs_str}]"
-        if pf.get("module_docstring"):
-            line += f"\n  Module doc: {pf['module_docstring'][:100]}"
-        structure_summary.append(line)
-
-    structure_text = "\n".join(structure_summary)
-
-    llm_prompt = f"""You are generating a professional README.md for the GitHub repository: {repo_name}
-
-Persona mode: {persona}
-Instructions: {persona_instr}
-
-Repository structure:
-{structure_text}
-
-{f"Additional context: {extra_context}" if extra_context else ""}
-
-Generate ONLY the following sections (in order):
-1. # {repo_name.split("/")[-1]} (H1 title with one-line description)
-2. ## Overview (2-3 paragraphs explaining what the project does and why)
-3. ## Features (bullet list of 5-8 key features)
-4. ## Tech Stack (technologies used)
-5. ## Getting Started (prerequisites, installation steps, environment setup)
-6. ## Usage (code examples, common use cases)
-7. ## Configuration (environment variables table: Variable | Description | Default)
-8. ## Contributing (how to contribute, PR process)
-
-Write in clean markdown. Be specific to the actual codebase shown, not generic."""
-
-    try:
-        resp = await client.chat.completions.create(
-            model=settings.nim_docs_model,
-            messages=[{"role": "user", "content": llm_prompt}],
-            temperature=0.4,
-            max_tokens=3000,
+def _module_map(parsed_files: list[dict[str, Any]], max_items: int = 10) -> str:
+    ranked = sorted(parsed_files, key=lambda x: (x.get("line_count", 0), len(x.get("functions", []))), reverse=True)
+    lines: list[str] = []
+    for item in ranked[:max_items]:
+        imports = ", ".join(item.get("imports", [])[:4]) or "none"
+        lines.append(
+            f"- `{item['path']}` ({item.get('line_count', 0)} lines) "
+            f"-> {len(item.get('functions', []))} functions, {len(item.get('classes', []))} classes. "
+            f"Role: {_module_role(item)} Imports: {imports}."
         )
-        llm_sections = resp.choices[0].message.content or ""
-    except Exception as e:
-        logger.error(f"[ReadmeGen] LLM call failed: {e}")
-        llm_sections = f"# {repo_name}\n\n*Documentation generation failed: {e}*"
+    return "\n".join(lines) or "- No modules detected."
 
-    # Append auto-generated sections
-    mermaid_chart = generate_mermaid_flowchart(parsed_files)
-    api_ref = _build_api_reference(parsed_files)
-    doc_rot = _detect_doc_rot(parsed_files)
 
-    readme = f"""{llm_sections}
+def _entrypoint_candidates(parsed_files: list[dict[str, Any]], max_items: int = 6) -> str:
+    candidates = []
+    for item in parsed_files:
+        path = item["path"].lower()
+        if any(name in path for name in ("main.py", "app.py", "server.py", "index.ts", "index.js")):
+            candidates.append(item["path"])
+    if not candidates:
+        candidates = [item["path"] for item in parsed_files[:max_items]]
+    return "\n".join(f"- `{path}`" for path in candidates[:max_items])
 
----
 
-## 🗺️ Module Structure
+def _change_map(parsed_files: list[dict[str, Any]]) -> str:
+    hints = []
+    for item in parsed_files[:24]:
+        path = item["path"].lower()
+        original = item["path"]
+        if any(k in path for k in ("readme", "docs", "guide")):
+            hints.append(f"- Documentation updates: `{original}`")
+        elif any(k in path for k in ("api", "route", "controller")):
+            hints.append(f"- API behavior changes: `{original}`")
+        elif any(k in path for k in ("component", ".tsx", ".jsx", "ui/")):
+            hints.append(f"- UI/UX updates: `{original}`")
+        elif any(k in path for k in ("agent", "service", "logic", "core")):
+            hints.append(f"- Core logic changes: `{original}`")
+    deduped = []
+    seen = set()
+    for line in hints:
+        if line in seen:
+            continue
+        seen.add(line)
+        deduped.append(line)
+    return "\n".join(deduped[:12]) or "- Core changes: inspect entrypoint and largest modules."
 
-{mermaid_chart}
 
----
+def create_readme_template(parsed_files: list[dict[str, Any]], persona: str) -> str:
+    facts = build_repo_facts(parsed_files)
+    lang_block = "\n".join(f"- {k}: {v} files" for k, v in facts["languages"].items())
 
-{api_ref}
-{doc_rot}
+    return f"""# Project Documentation
 
----
+## Overview
+This repository contains **{facts['file_count']}** code files with **{facts['function_count']}** functions and **{facts['class_count']}** classes.
 
-*📖 Documentation auto-generated by [DevIQ](https://github.com/deviq) · NVIDIA NIM · Persona: `{persona}`*
+## Tech Snapshot
+{lang_block or '- No supported source files detected'}
+
+## Repository Map (Specific)
+{_module_map(parsed_files)}
+
+## Likely Entrypoints
+{_entrypoint_candidates(parsed_files)}
+
+## Setup
+1. Install dependencies for each service.
+2. Configure environment variables.
+3. Start backend and frontend services.
+
+## Usage
+1. Run the application locally.
+2. Use the dashboard to generate code reviews and documentation.
+3. Export generated docs into your repository.
+
+## API (High-Level)
+- `POST /api/review/repo`
+- `POST /api/review/upload`
+- `POST /api/docs/repo`
+- `POST /api/docs/upload`
+- `POST /api/github/webhook`
+
+## Change Guide (What To Edit)
+{_change_map(parsed_files)}
+
+## Persona Notes
+{PERSONA_HINTS.get(persona, PERSONA_HINTS['Student'])}
 """
-    return readme
+
+
+def create_onboarding_guide(parsed_files: list[dict[str, Any]], persona: str) -> str:
+    first_files = "\n".join(
+        f"- `{item['path']}` -> {_module_role(item)}" for item in sorted(parsed_files, key=lambda x: x.get("line_count", 0), reverse=True)[:8]
+    )
+    change_map = _change_map(parsed_files)
+    return f"""# Onboarding Guide ({persona})
+
+## First 30 Minutes
+{first_files or '- Explore repository root files'}
+
+## What to Learn First
+- Understand entrypoints and request flow.
+- Identify core modules and utility layers.
+- Run the project locally and verify health endpoints.
+
+## Where To Change What
+{change_map}
+
+## Contribution Checklist
+- Add tests for behavior changes.
+- Keep docs in sync with code.
+- Run static checks before opening a PR.
+"""
