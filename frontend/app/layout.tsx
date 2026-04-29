@@ -8,8 +8,9 @@ const spaceGrotesk = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "DevPilot AI",
-  description: "AI-powered code review and documentation platform",
+  title: "DevPilot AI – Multi-Agent Code Review & Documentation",
+  description:
+    "Ship better pull requests with AI-powered code review and automated documentation generation.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
