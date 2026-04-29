@@ -18,17 +18,17 @@ class DocumentationService:
         self.nim = NIMClient()
         self.structure = StructureService()
 
-    def generate(self, parsed_files: list[dict[str, Any]], persona: str) -> dict[str, Any]:
+    def generate(self, parsed_files: list[dict[str, Any]], persona: str, repo_name: str = "") -> dict[str, Any]:
         index_stats = self.rag.index_repository(parsed_files)
         structure_context = self.structure.derive(parsed_files)
 
         docstrings = self._generate_docstrings(parsed_files, persona)
-        readme = self._generate_readme(parsed_files, persona, structure_context)
+        readme = self._generate_readme(parsed_files, persona, structure_context, repo_name=repo_name)
 
         existing_docs = "\n\n".join(item["content"] for item in parsed_files if item["path"].endswith(".md"))
         doc_rot = detect_doc_rot(parsed_files, existing_docs)
         if doc_rot:
-            readme = self._generate_readme(parsed_files, persona, structure_context, regenerate=True)
+            readme = self._generate_readme(parsed_files, persona, structure_context, regenerate=True, repo_name=repo_name)
 
         modular_docs = self._build_modular_docs(parsed_files, persona)
 
@@ -76,24 +76,52 @@ class DocumentationService:
         persona: str,
         structure_context: dict[str, Any],
         regenerate: bool = False,
+        repo_name: str = "",
     ) -> str:
-        base = create_readme_template(parsed_files, persona)
+        base = create_readme_template(parsed_files, persona, repo_name=repo_name)
         action = "Regenerated due to doc rot detection." if regenerate else "Generated from current repository state."
 
-        prompt = f"""
-Persona guidance: {persona_style(persona)}
-Rewrite this README so it is practical and immediately useful for contributors.
-Add sections for setup, architecture, API usage, and workflow.
-Use specific file references from the input map; avoid generic statements.
-Context note: {action}
-Structure context: {structure_context}
+        # Build a rich facts block with real symbol names for the NIM prompt
+        all_fns = []
+        all_classes = []
+        for item in parsed_files[:15]:
+            for fn in item.get("functions", [])[:3]:
+                all_fns.append(f"`{fn['name']}` in {item['path']}")
+            for cls in item.get("classes", [])[:2]:
+                all_classes.append(f"`{cls['name']}` in {item['path']}")
 
-{base}
-""".strip()
+        real_fns = ", ".join(all_fns[:12]) or "none detected"
+        real_classes = ", ".join(all_classes[:8]) or "none detected"
+        file_list = ", ".join(item["path"] for item in parsed_files[:10])
+
+        prompt = f"""
+        You are writing a README.md for the repository: **{repo_name or 'this project'}**.
+
+        REAL CODE FACTS (use these specifically — do not make things up):
+        - Files: {file_list}
+        - Real functions found: {real_fns}
+        - Real classes found: {real_classes}
+        - Structure: {structure_context}
+        - Context: {action}
+
+        PERSONA: {persona_style(persona)}
+
+        TASK: Rewrite the template below into a polished, specific README.md.
+        - Replace ALL placeholder comments with real content based on the code facts above
+        - Use the actual function and class names found in the code
+        - Write a real Setup section based on detected tech stack (languages/frameworks)
+        - Write a real Usage section referencing the actual entrypoint files and functions
+        - Write a real Architecture section describing how the modules interact
+        - Keep the Change Guide section
+        - Output clean GitHub-flavored Markdown only — no extra commentary
+
+        TEMPLATE TO REWRITE:
+        {base}
+        """.strip()
 
         generated = self.nim.chat(
             model=settings.nim_model_qwen_docs,
-            system_prompt="You are a technical writer focused on developer onboarding.",
+            system_prompt="You are a senior technical writer producing real, repo-specific documentation. Never use placeholder text.",
             user_prompt=prompt,
             temperature=0.2,
         )

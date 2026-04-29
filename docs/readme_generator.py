@@ -92,45 +92,107 @@ def _change_map(parsed_files: list[dict[str, Any]]) -> str:
     return "\n".join(deduped[:12]) or "- Core changes: inspect entrypoint and largest modules."
 
 
-def create_readme_template(parsed_files: list[dict[str, Any]], persona: str) -> str:
+def _tech_stack(parsed_files: list[dict[str, Any]]) -> str:
+    """Infer tech stack from actual imports across all files."""
+    all_imports: list[str] = []
+    for item in parsed_files:
+        all_imports.extend(item.get("imports", []))
+
+    known = {
+        "fastapi": "FastAPI", "flask": "Flask", "django": "Django",
+        "next": "Next.js", "react": "React", "vue": "Vue",
+        "sqlalchemy": "SQLAlchemy", "prisma": "Prisma",
+        "pydantic": "Pydantic", "pytest": "pytest",
+        "openai": "OpenAI SDK", "anthropic": "Anthropic SDK",
+        "httpx": "httpx", "requests": "requests",
+        "uvicorn": "Uvicorn", "gunicorn": "Gunicorn",
+        "redis": "Redis", "celery": "Celery",
+        "numpy": "NumPy", "pandas": "Pandas", "torch": "PyTorch",
+        "langchain": "LangChain", "jwt": "PyJWT",
+        "tailwind": "TailwindCSS", "typescript": "TypeScript",
+    }
+    detected = []
+    seen = set()
+    for imp in all_imports:
+        imp_lower = imp.lower().split(".")[0]
+        for key, label in known.items():
+            if key in imp_lower and label not in seen:
+                detected.append(f"- **{label}**")
+                seen.add(label)
+    return "\n".join(detected) or "- (detected from imports)"
+
+
+def _key_symbols(parsed_files: list[dict[str, Any]], max_files: int = 8) -> str:
+    """List real function/class names from the most important files."""
+    ranked = sorted(
+        parsed_files,
+        key=lambda x: (len(x.get("functions", [])) + len(x.get("classes", [])), x.get("line_count", 0)),
+        reverse=True,
+    )
+    lines: list[str] = []
+    for item in ranked[:max_files]:
+        fns = [f"`{f['name']}()`" for f in item.get("functions", [])[:5]]
+        classes = [f"`{c['name']}`" for c in item.get("classes", [])[:3]]
+        symbols = ", ".join(classes + fns) or "no exported symbols"
+        lines.append(f"- **`{item['path']}`** — {symbols}")
+    return "\n".join(lines) or "- No symbols detected."
+
+
+def _code_snippet(parsed_files: list[dict[str, Any]]) -> str:
+    """Pull a short real code snippet from the primary entrypoint."""
+    for item in parsed_files:
+        path = item["path"].lower()
+        if any(name in path for name in ("main.py", "app.py", "server.py", "index.ts", "index.js")):
+            content = item.get("content", "")
+            if content:
+                lines = content.strip().splitlines()[:20]
+                return "```" + item.get("language", "") + "\n" + "\n".join(lines) + "\n```"
+    return ""
+
+
+def create_readme_template(parsed_files: list[dict[str, Any]], persona: str, repo_name: str = "") -> str:
     facts = build_repo_facts(parsed_files)
-    lang_block = "\n".join(f"- {k}: {v} files" for k, v in facts["languages"].items())
+    lang_block = "\n".join(f"- **{k}**: {v} file(s)" for k, v in facts["languages"].items())
 
-    # Extract repo name from first file path if possible
-    repo_name = "This Repository"
-    if parsed_files:
+    # Use provided repo name or infer from file paths
+    if not repo_name and parsed_files:
         path_parts = parsed_files[0]["path"].split("/")
-        if len(path_parts) > 1:
-            repo_name = path_parts[0]  # Assume first part is repo name
+        repo_name = path_parts[0] if len(path_parts) > 1 else "This Repository"
 
-    return f"""# {repo_name} Documentation
+    snippet = _code_snippet(parsed_files)
+    snippet_block = f"\n## Entrypoint Preview\n{snippet}\n" if snippet else ""
+
+    return f"""# {repo_name}
 
 ## Overview
-This repository contains **{facts['file_count']}** code files with **{facts['function_count']}** functions and **{facts['class_count']}** classes.
+**{facts['file_count']} files** · **{facts['function_count']} functions** · **{facts['class_count']} classes**
 
-## Tech Snapshot
-{lang_block or '- No supported source files detected'}
+## Tech Stack (detected from imports)
+{lang_block}
+{_tech_stack(parsed_files)}
 
-## Repository Map (Specific)
+## Key Modules & Symbols
+{_key_symbols(parsed_files)}
+
+## Repository Structure
 {_module_map(parsed_files)}
 
-## Likely Entrypoints
+## Entrypoints
 {_entrypoint_candidates(parsed_files)}
-
+{snippet_block}
 ## Setup
-1. Install dependencies for each service.
-2. Configure environment variables.
-3. Start the application.
+<!-- To be filled by AI based on detected stack -->
 
 ## Usage
-1. Run the application locally.
-2. Use the features to interact with the codebase.
-3. Export generated docs into your repository.
+<!-- To be filled by AI based on actual API routes and functions -->
 
-## Change Guide (What To Edit)
+## Architecture Notes
+<!-- To be filled by AI based on module map and import graph -->
+
+## Change Guide
 {_change_map(parsed_files)}
 
-## Persona Notes
+## Persona: {persona}
 {PERSONA_HINTS.get(persona, PERSONA_HINTS['Student'])}
 """
 
