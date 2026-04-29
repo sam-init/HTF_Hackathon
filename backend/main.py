@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from backend.models.schemas import DocsResponse, HealthResponse, RepoInput, ReviewResponse, WebhookAck
+from backend.models.schemas import (
+    DocsResponse,
+    HealthResponse,
+    JobStatus,
+    RepoInput,
+    ReviewResponse,
+    WebhookAck,
+)
 from backend.services.doc_service import DocumentationService
-from backend.services.github_app_auth import GitHubAppAuth, GitHubAppAuthError
 from backend.services.ingestion import (
     IngestionError,
     cleanup_workspace,
@@ -22,11 +31,16 @@ from backend.services.review_service import ReviewService
 from backend.utils.settings import settings
 from docs.parser import parse_repository
 from docs.repo_loader import iter_code_files
-from github.commenter import format_inline_comments
+from github.commenter import format_inline_comments, post_pr_review, push_readme_to_github
 from github.diff_fetcher import GitHubDiffError, fetch_pr_diff
 from github.pr_handler import build_virtual_files_from_diff
 from github.webhook import SignatureValidationError, validate_github_signature
 from rag.rag_pipeline import RAGPipeline
+
+# ── App setup ─────────────────────────────────────────────────────────────────
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Developer Platform API", version="1.0.0")
 
@@ -39,12 +53,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Services & state ──────────────────────────────────────────────────────────
+
 rag_pipeline = RAGPipeline()
 review_service = ReviewService(rag_pipeline)
 doc_service = DocumentationService(rag_pipeline)
-github_app_auth = GitHubAppAuth(settings.github_app_id, settings.github_private_key)
-RUN_CACHE: dict[str, dict[str, Any]] = {}
 
+RUN_CACHE: dict[str, dict[str, Any]] = {}
+JOBS: dict[str, dict[str, Any]] = {}  # job_id → {status, message, result}
+
+
+# ── Global exception handler ──────────────────────────────────────────────────
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {type(exc).__name__}: {exc}"},
+    )
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
@@ -55,6 +85,24 @@ def health() -> HealthResponse:
     )
 
 
+# ── Job polling ───────────────────────────────────────────────────────────────
+
+@app.get("/api/jobs/{job_id}", response_model=JobStatus)
+def get_job_status(job_id: str) -> JobStatus:
+    """Poll this endpoint until status == 'done' or 'error'."""
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+    return JobStatus(
+        job_id=job_id,
+        status=job["status"],
+        message=job.get("message", ""),
+        result=job.get("result"),
+    )
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _parse_workspace(repo_root: Path) -> list[dict[str, Any]]:
     files = iter_code_files(repo_root)
     if not files:
@@ -62,90 +110,136 @@ def _parse_workspace(repo_root: Path) -> list[dict[str, Any]]:
     return parse_repository(files)
 
 
-@app.post("/api/review/repo", response_model=ReviewResponse)
-def review_repo(payload: RepoInput) -> ReviewResponse:
-    workspace = create_workspace()
+def _extract_repo_name(repo_url: str) -> str | None:
+    """Extract 'owner/repo' from a GitHub URL."""
+    m = re.search(r"github\.com[:/]([\w.-]+/[\w.-]+)", repo_url)
+    if not m:
+        return None
+    return m.group(1).removesuffix(".git")
+
+
+# ── Background job workers ────────────────────────────────────────────────────
+
+def _job_review(job_id: str, persona: str, workspace: Path, repo_root: Path) -> None:
     try:
-        try:
-            repo_root = ingest_from_url(payload.repo_url, workspace, github_token=settings.github_token)
-        except IngestionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        parsed_files = _parse_workspace(repo_root)
-        result = review_service.review(parsed_files, payload.persona)
-
-        run_id = str(uuid.uuid4())
-        response = ReviewResponse(run_id=run_id, persona=payload.persona, **result)
-        RUN_CACHE[run_id] = response.model_dump()
-        return response
-    finally:
-        if not settings.keep_workspaces:
-            cleanup_workspace(workspace)
-
-
-@app.post("/api/review/upload", response_model=ReviewResponse)
-async def review_upload(persona: str = Form(...), file: UploadFile = File(...)) -> ReviewResponse:
-    blob = await file.read()
-    workspace = create_workspace()
-    try:
-        try:
-            repo_root = ingest_zip_bytes(blob, workspace)
-        except IngestionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
         parsed_files = _parse_workspace(repo_root)
         result = review_service.review(parsed_files, persona)
-
         run_id = str(uuid.uuid4())
-        response = ReviewResponse(run_id=run_id, persona=persona, **result)
+        response = ReviewResponse(run_id=run_id, persona=persona, **result)  # type: ignore[arg-type]
         RUN_CACHE[run_id] = response.model_dump()
-        return response
+        JOBS[job_id] = {"status": "done", "result": response.model_dump(), "message": "Review complete"}
+    except Exception as exc:
+        logger.exception("Job %s (review) failed: %s", job_id, exc)
+        JOBS[job_id] = {"status": "error", "message": str(exc), "result": None}
     finally:
         if not settings.keep_workspaces:
             cleanup_workspace(workspace)
 
 
-@app.post("/api/docs/repo", response_model=DocsResponse)
-def docs_repo(payload: RepoInput) -> DocsResponse:
+def _job_docs(
+    job_id: str,
+    persona: str,
+    workspace: Path,
+    repo_root: Path,
+    repo_full_name: str | None = None,
+) -> None:
+    try:
+        parsed_files = _parse_workspace(repo_root)
+        result = doc_service.generate(parsed_files, persona)
+        run_id = str(uuid.uuid4())
+        response = DocsResponse(run_id=run_id, persona=persona, **result)  # type: ignore[arg-type]
+        RUN_CACHE[run_id] = response.model_dump()
+        JOBS[job_id] = {"status": "done", "result": response.model_dump(), "message": "Docs generated"}
+
+        # Push README to GitHub using the dedicated docs token
+        if repo_full_name and result.get("readme") and settings.github_docs_token:
+            pushed = push_readme_to_github(
+                repo_full_name=repo_full_name,
+                token=settings.github_docs_token,
+                readme_content=result["readme"],
+            )
+            logger.info("README push to %s: %s", repo_full_name, "OK" if pushed else "failed")
+        elif repo_full_name and not settings.github_docs_token:
+            logger.warning("GITHUB_DOCS_TOKEN not set — skipping README push to %s", repo_full_name)
+
+    except Exception as exc:
+        logger.exception("Job %s (docs) failed: %s", job_id, exc)
+        JOBS[job_id] = {"status": "error", "message": str(exc), "result": None}
+    finally:
+        if not settings.keep_workspaces:
+            cleanup_workspace(workspace)
+
+
+# ── Review endpoints ──────────────────────────────────────────────────────────
+
+@app.post("/api/review/repo", response_model=JobStatus)
+def review_repo(payload: RepoInput, background_tasks: BackgroundTasks) -> JobStatus:
     workspace = create_workspace()
     try:
-        try:
-            repo_root = ingest_from_url(payload.repo_url, workspace, github_token=settings.github_token)
-        except IngestionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        parsed_files = _parse_workspace(repo_root)
-        result = doc_service.generate(parsed_files, payload.persona)
-
-        run_id = str(uuid.uuid4())
-        response = DocsResponse(run_id=run_id, persona=payload.persona, **result)
-        RUN_CACHE[run_id] = response.model_dump()
-        return response
-    finally:
-        if not settings.keep_workspaces:
-            cleanup_workspace(workspace)
+        repo_root = ingest_from_url(payload.repo_url, workspace, github_token=settings.github_review_token)
+    except IngestionError as exc:
+        cleanup_workspace(workspace)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {"status": "processing", "message": "Review queued", "result": None}
+    background_tasks.add_task(_job_review, job_id, payload.persona, workspace, repo_root)
+    return JobStatus(job_id=job_id, status="processing", message="Review queued — poll /api/jobs/{job_id}")
 
 
-@app.post("/api/docs/upload", response_model=DocsResponse)
-async def docs_upload(persona: str = Form(...), file: UploadFile = File(...)) -> DocsResponse:
+@app.post("/api/review/upload", response_model=JobStatus)
+async def review_upload(
+    background_tasks: BackgroundTasks,
+    persona: str = Form(...),
+    file: UploadFile = File(...),
+) -> JobStatus:
     blob = await file.read()
     workspace = create_workspace()
     try:
-        try:
-            repo_root = ingest_zip_bytes(blob, workspace)
-        except IngestionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        repo_root = ingest_zip_bytes(blob, workspace)
+    except IngestionError as exc:
+        cleanup_workspace(workspace)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {"status": "processing", "message": "Review queued", "result": None}
+    background_tasks.add_task(_job_review, job_id, persona, workspace, repo_root)
+    return JobStatus(job_id=job_id, status="processing", message="Review queued — poll /api/jobs/{job_id}")
 
-        parsed_files = _parse_workspace(repo_root)
-        result = doc_service.generate(parsed_files, persona)
 
-        run_id = str(uuid.uuid4())
-        response = DocsResponse(run_id=run_id, persona=persona, **result)
-        RUN_CACHE[run_id] = response.model_dump()
-        return response
-    finally:
-        if not settings.keep_workspaces:
-            cleanup_workspace(workspace)
+# ── Docs endpoints ────────────────────────────────────────────────────────────
+
+@app.post("/api/docs/repo", response_model=JobStatus)
+def docs_repo(payload: RepoInput, background_tasks: BackgroundTasks) -> JobStatus:
+    workspace = create_workspace()
+    try:
+        repo_root = ingest_from_url(payload.repo_url, workspace, github_token=settings.github_review_token)
+    except IngestionError as exc:
+        cleanup_workspace(workspace)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    repo_full_name = _extract_repo_name(payload.repo_url)
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {"status": "processing", "message": "Docs generation queued", "result": None}
+    background_tasks.add_task(_job_docs, job_id, payload.persona, workspace, repo_root, repo_full_name)
+    msg = f"Docs queued — README will be pushed to {repo_full_name}" if repo_full_name else "Docs queued"
+    return JobStatus(job_id=job_id, status="processing", message=msg)
+
+
+@app.post("/api/docs/upload", response_model=JobStatus)
+async def docs_upload(
+    background_tasks: BackgroundTasks,
+    persona: str = Form(...),
+    file: UploadFile = File(...),
+) -> JobStatus:
+    blob = await file.read()
+    workspace = create_workspace()
+    try:
+        repo_root = ingest_zip_bytes(blob, workspace)
+    except IngestionError as exc:
+        cleanup_workspace(workspace)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {"status": "processing", "message": "Docs generation queued", "result": None}
+    background_tasks.add_task(_job_docs, job_id, persona, workspace, repo_root)
+    return JobStatus(job_id=job_id, status="processing", message="Docs queued — poll /api/jobs/{job_id}")
 
 
 # ── GitHub webhook ────────────────────────────────────────────────────────────
@@ -153,26 +247,24 @@ async def docs_upload(persona: str = Form(...), file: UploadFile = File(...)) ->
 def _run_pr_review_background(
     repo_name: str,
     pr_number: int,
-    auth_token: str,
-    action: str,
     run_id: str,
 ) -> None:
-    """Background task: fetch diff → review → post comments. Runs after webhook ACK."""
+    """Background task: fetch diff → review → post comments."""
     try:
-        diff_text = fetch_pr_diff(repo_name, pr_number, auth_token)
+        diff_text = fetch_pr_diff(repo_name, pr_number, settings.github_review_token)
     except GitHubDiffError as exc:
-        logger.warning("Background PR review: diff fetch failed for %s#%d: %s", repo_name, pr_number, exc)
+        logger.warning("PR review: diff fetch failed for %s#%d: %s", repo_name, pr_number, exc)
         return
 
     parsed_files = build_virtual_files_from_diff(diff_text)
     if not parsed_files:
-        logger.info("Background PR review: no reviewable files in diff for %s#%d", repo_name, pr_number)
+        logger.info("PR review: no reviewable files in diff for %s#%d", repo_name, pr_number)
         return
 
     try:
         result = review_service.review(parsed_files, persona="Backend Developer")
     except Exception as exc:
-        logger.exception("Background PR review: review_service failed for %s#%d: %s", repo_name, pr_number, exc)
+        logger.exception("PR review: review_service failed for %s#%d: %s", repo_name, pr_number, exc)
         return
 
     RUN_CACHE[run_id] = {
@@ -186,12 +278,12 @@ def _run_pr_review_background(
     posted = post_pr_review(
         repo_full_name=repo_name,
         pr_number=pr_number,
-        token=auth_token,
+        token=settings.github_review_token,
         findings=result["findings"],
         summary=result.get("summary", ""),
     )
     logger.info(
-        "Background PR review done for %s#%d — %d findings, comment posted: %s",
+        "PR review done for %s#%d — %d findings, posted: %s",
         repo_name, pr_number, len(result["findings"]), posted,
     )
 
@@ -223,35 +315,20 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
     repo = payload.get("repository", {})
     repo_name = repo.get("full_name")
     pr_number = pr.get("number")
-    installation_id = payload.get("installation", {}).get("id")
 
     if not repo_name or not pr_number:
-        raise HTTPException(status_code=400, detail="Invalid pull_request payload: missing repo or pr_number")
+        raise HTTPException(status_code=400, detail="Invalid pull_request payload")
 
-    # Resolve auth token — fall back to PAT if GitHub App auth fails
-    auth_token = settings.github_token
-    if github_app_auth.enabled and installation_id:
-        try:
-            auth_token = github_app_auth.get_installation_token(int(installation_id))
-        except GitHubAppAuthError as exc:
-            logger.warning("GitHub App auth failed, using PAT: %s", exc)
+    if not settings.github_review_token:
+        logger.warning("GITHUB_REVIEW_TOKEN not set — cannot post PR review for %s#%d", repo_name, pr_number)
+        return WebhookAck(accepted=True, action="ignored", message="No review token configured")
 
     run_id = str(uuid.uuid4())
-
-    # ✅ ACK GitHub immediately (must respond within 10s)
-    # The slow NIM review runs in the background after this response is sent.
-    background_tasks.add_task(
-        _run_pr_review_background,
-        repo_name,
-        pr_number,
-        auth_token,
-        action,
-        run_id,
-    )
+    background_tasks.add_task(_run_pr_review_background, repo_name, pr_number, run_id)
 
     return WebhookAck(
         accepted=True,
         action=action,
-        message="PR queued for review — results will be posted as a GitHub comment shortly.",
+        message="PR queued for review — comment will appear shortly.",
         run_id=run_id,
     )
