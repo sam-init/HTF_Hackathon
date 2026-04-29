@@ -50,7 +50,8 @@ class NIMClient:
         }
 
         try:
-            with httpx.Client(timeout=120.0) as client:
+            timeout = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=5.0)
+            with httpx.Client(timeout=timeout) as client:
                 response = client.post(url, headers=headers, json=payload)
                 response.raise_for_status()
             data = response.json()

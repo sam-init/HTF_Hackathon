@@ -49,6 +49,30 @@ class GitHubAppAuth:
             "exp": now + 600,
             "iss": self.app_id,
         }
-        key = self.private_key.replace("\\n", "\n")
-        encoded = jwt.encode(payload, key, algorithm="RS256")
-        return encoded if isinstance(encoded, str) else encoded.decode("utf-8")
+        key = self._normalize_key(self.private_key)
+        try:
+            encoded = jwt.encode(payload, key, algorithm="RS256")
+            return encoded if isinstance(encoded, str) else encoded.decode("utf-8")
+        except Exception as exc:
+            raise GitHubAppAuthError(
+                f"Failed to build GitHub App JWT — check GITHUB_PRIVATE_KEY format: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _normalize_key(raw: str) -> str:
+        """
+        Normalise a PEM private key that may have been pasted into an env var
+        with literal \\n instead of real newlines, or with spaces instead of newlines.
+        """
+        # Replace literal backslash-n with real newlines
+        key = raw.replace("\\n", "\n").strip()
+
+        # If the whole key is on one line (no newlines), try to reconstruct it
+        if "\n" not in key and "-----" in key:
+            # Split on the PEM header/footer markers
+            key = key.replace("-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----\n")
+            key = key.replace("-----END RSA PRIVATE KEY-----", "\n-----END RSA PRIVATE KEY-----")
+            key = key.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n")
+            key = key.replace("-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
+
+        return key
