@@ -74,3 +74,10 @@ class WebhookAck(BaseModel):
     action: str
     message: str
     run_id: str | None = None
+
+
+class JobStatus(BaseModel):
+    job_id: str
+    status: Literal["queued", "processing", "done", "error"]
+    message: str = ""
+    result: dict[str, Any] | None = None

@@ -127,3 +127,72 @@ def _post_summary_comment(
     except Exception as exc:
         logger.warning("Exception posting fallback summary comment: %s", exc)
         return False
+
+
+def push_readme_to_github(
+    repo_full_name: str,
+    token: str,
+    readme_content: str,
+    branch: str = "main",
+    path: str = "README.md",
+    commit_message: str = "docs: auto-generated README by AI Developer Platform 🤖",
+) -> bool:
+    """
+    Create or update README.md in the target GitHub repo via the Contents API.
+
+    - If the file already exists, fetches its SHA first (required for updates).
+    - Falls back to 'master' branch if 'main' is not found.
+    - Returns True on success, False on any error (errors are logged, not raised).
+    """
+    import base64
+
+    if not token:
+        logger.info("No GitHub token — skipping README push for %s", repo_full_name)
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    encoded = base64.b64encode(readme_content.encode("utf-8")).decode("ascii")
+    url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
+
+    # Try to get the current file SHA (needed if file already exists)
+    current_sha: str | None = None
+    for attempt_branch in [branch, "master"]:
+        try:
+            r = requests.get(url, headers=headers, params={"ref": attempt_branch}, timeout=15)
+            if r.status_code == 200:
+                current_sha = r.json().get("sha")
+                branch = attempt_branch  # use whichever branch actually exists
+                break
+            elif r.status_code == 404:
+                continue  # file doesn't exist yet — that's fine
+        except Exception as exc:
+            logger.warning("Could not fetch current %s from %s: %s", path, repo_full_name, exc)
+
+    payload: dict[str, Any] = {
+        "message": commit_message,
+        "content": encoded,
+        "branch": branch,
+    }
+    if current_sha:
+        payload["sha"] = current_sha
+
+    try:
+        response = requests.put(url, json=payload, headers=headers, timeout=20)
+        if response.status_code in (200, 201):
+            action = "Updated" if current_sha else "Created"
+            logger.info("%s %s in %s on branch %s", action, path, repo_full_name, branch)
+            return True
+        logger.warning(
+            "Failed to push %s to %s: HTTP %d — %s",
+            path, repo_full_name, response.status_code, response.text[:300],
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Exception pushing %s to %s: %s", path, repo_full_name, exc)
+        return False
+

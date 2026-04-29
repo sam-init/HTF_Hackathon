@@ -42,6 +42,37 @@ class GitHubAppAuth:
             raise GitHubAppAuthError("GitHub installation token response did not include a token")
         return token
 
+    def get_installation_token_for_repo(self, repo_full_name: str) -> str:
+        """
+        Resolve the installation ID for a specific repo, then get its access token.
+        Uses GET /repos/{owner}/{repo}/installation (requires the App JWT).
+        The Docs Push App must be installed on the target repo.
+        """
+        if not self.enabled:
+            raise GitHubAppAuthError("GitHub App auth is not configured")
+
+        app_jwt = self._build_jwt()
+        headers = {
+            "Authorization": f"Bearer {app_jwt}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+        # Lookup installation for this specific repo
+        lookup_url = f"https://api.github.com/repos/{repo_full_name}/installation"
+        r = requests.get(lookup_url, headers=headers, timeout=15)
+        if r.status_code >= 400:
+            raise GitHubAppAuthError(
+                f"Docs Push App is not installed on {repo_full_name} "
+                f"(HTTP {r.status_code}). Install it at https://github.com/settings/apps"
+            )
+        installation_id = r.json().get("id")
+        if not installation_id:
+            raise GitHubAppAuthError(f"Could not resolve installation ID for {repo_full_name}")
+
+        return self.get_installation_token(int(installation_id))
+
+
     def _build_jwt(self) -> str:
         now = int(time.time())
         payload = {
