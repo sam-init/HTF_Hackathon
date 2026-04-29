@@ -42,9 +42,9 @@ export default function HomePage() {
             Multi-Agent AI Platform
           </div>
 
-          <h1>Ship Better Pull Requests With Multi-Agent AI Reviews</h1>
+          <h1>Context-Aware Documentation Generator & Multiagent Code Review System</h1>
           <p>
-            DevPilot AI combines six specialized review agents with automated documentation
+            Our platform combines six specialized review agents with automated documentation
             generation — giving teams instant README files, docstrings, dependency graphs, and
             actionable inline findings.
           </p>
