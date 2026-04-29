@@ -96,7 +96,14 @@ def create_readme_template(parsed_files: list[dict[str, Any]], persona: str) -> 
     facts = build_repo_facts(parsed_files)
     lang_block = "\n".join(f"- {k}: {v} files" for k, v in facts["languages"].items())
 
-    return f"""# Project Documentation
+    # Extract repo name from first file path if possible
+    repo_name = "This Repository"
+    if parsed_files:
+        path_parts = parsed_files[0]["path"].split("/")
+        if len(path_parts) > 1:
+            repo_name = path_parts[0]  # Assume first part is repo name
+
+    return f"""# {repo_name} Documentation
 
 ## Overview
 This repository contains **{facts['file_count']}** code files with **{facts['function_count']}** functions and **{facts['class_count']}** classes.
@@ -113,19 +120,12 @@ This repository contains **{facts['file_count']}** code files with **{facts['fun
 ## Setup
 1. Install dependencies for each service.
 2. Configure environment variables.
-3. Start backend and frontend services.
+3. Start the application.
 
 ## Usage
 1. Run the application locally.
-2. Use the dashboard to generate code reviews and documentation.
+2. Use the features to interact with the codebase.
 3. Export generated docs into your repository.
-
-## API (High-Level)
-- `POST /api/review/repo`
-- `POST /api/review/upload`
-- `POST /api/docs/repo`
-- `POST /api/docs/upload`
-- `POST /api/github/webhook`
 
 ## Change Guide (What To Edit)
 {_change_map(parsed_files)}

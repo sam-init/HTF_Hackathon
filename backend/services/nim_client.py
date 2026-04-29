@@ -1,22 +1,36 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from backend.utils.settings import settings
 
+logger = logging.getLogger(__name__)
+
 
 class NIMClient:
     def __init__(self) -> None:
-        self.base_url = settings.nim_base_url.rstrip("/")
+        # Normalise: strip trailing slash, then strip accidental trailing /v1
+        # so we can safely append /v1/chat/completions ourselves.
+        base = settings.nim_base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        self.base_url = base
         self.api_key = settings.nim_api_key
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    def chat(self, model: str, system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str | None:
+    def chat(
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+    ) -> str | None:
         if not self.enabled:
             return None
 
@@ -32,13 +46,23 @@ class NIMClient:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": temperature,
+            "max_tokens": 4096,
         }
 
         try:
-            with httpx.Client(timeout=25.0) as client:
+            with httpx.Client(timeout=60.0) as client:
                 response = client.post(url, headers=headers, json=payload)
                 response.raise_for_status()
             data = response.json()
             return data["choices"][0]["message"]["content"]
-        except Exception:
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "NIM HTTP error %s for model %s: %s",
+                exc.response.status_code,
+                model,
+                exc.response.text[:300],
+            )
+            return None
+        except Exception as exc:
+            logger.warning("NIM call failed for model %s: %s", model, exc)
             return None
