@@ -24,7 +24,7 @@ class DocumentationService:
     async def generate(self, parsed_files: list[dict[str, Any]], persona: str, repo_name: str = "") -> dict[str, Any]:
         logger.info("Docs pipeline started | files=%d persona=%s repo=%s", len(parsed_files), persona, repo_name or "unknown")
         index_stats = self.rag.index_repository(parsed_files)
-        structure_context = self.structure.derive(parsed_files)
+        structure_context = await self.structure.derive(parsed_files)
 
         logger.info("Docs phase | generating_docstrings")
         docstrings = self._generate_docstrings(parsed_files, persona)

@@ -26,7 +26,7 @@ class ReviewService:
     async def review(self, parsed_files: list[dict[str, Any]], persona: str) -> dict[str, Any]:
         logger.info("Review pipeline started | files=%d persona=%s", len(parsed_files), persona)
         index_stats = self.rag.index_repository(parsed_files)
-        structure_context = self.structure.derive(parsed_files)
+        structure_context = await self.structure.derive(parsed_files)
         logger.info("Review phase | running_rule_based_agents")
         findings = self.orchestrator.run(parsed_files, persona)
         logger.info("Review phase | running_llm_agents")
