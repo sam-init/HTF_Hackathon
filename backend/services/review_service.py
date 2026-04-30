@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from agents.base_agent import AgentFinding, SEVERITY_ORDER
@@ -12,6 +13,8 @@ from backend.services.structure_service import StructureService
 from backend.utils.settings import settings
 from rag.rag_pipeline import RAGPipeline
 
+logger = logging.getLogger(__name__)
+
 
 class ReviewService:
     def __init__(self, rag: RAGPipeline) -> None:
@@ -20,15 +23,20 @@ class ReviewService:
         self.nim = NIMClient()
         self.structure = StructureService()
 
-    def review(self, parsed_files: list[dict[str, Any]], persona: str) -> dict[str, Any]:
+    async def review(self, parsed_files: list[dict[str, Any]], persona: str) -> dict[str, Any]:
+        logger.info("Review pipeline started | files=%d persona=%s", len(parsed_files), persona)
         index_stats = self.rag.index_repository(parsed_files)
         structure_context = self.structure.derive(parsed_files)
+        logger.info("Review phase | running_rule_based_agents")
         findings = self.orchestrator.run(parsed_files, persona)
-        findings.extend(self._qwen_review_pass(parsed_files, persona))
+        logger.info("Review phase | running_llm_agents")
+        findings.extend(await self._qwen_review_pass(parsed_files, persona))
         findings = self._dedupe_findings(findings)
         findings = self._apply_persona(findings, persona)
+        logger.info("Review phase | summarizing_findings count=%d", len(findings))
 
-        summary = self._summarize_findings(findings, persona, structure_context)
+        summary = await self._summarize_findings(findings, persona, structure_context)
+        logger.info("Review pipeline completed | findings=%d persona=%s", len(findings), persona)
         return {
             "findings": [f.__dict__ for f in findings],
             "summary": summary,
@@ -41,7 +49,7 @@ class ReviewService:
             },
         }
 
-    def _summarize_findings(self, findings: list[Any], persona: str, structure_context: dict[str, Any]) -> str:
+    async def _summarize_findings(self, findings: list[Any], persona: str, structure_context: dict[str, Any]) -> str:
         if not findings:
             return "No high-confidence issues were detected. The current changes appear stable under configured review checks."
 
@@ -60,7 +68,7 @@ Structure context:
 {json.dumps(structure_context)}
 """.strip()
 
-        generated = self.nim.chat(
+        generated = await self.nim.chat(
             model=settings.nim_model_qwen_review,
             system_prompt="You are a senior staff engineer producing PR review summaries.",
             user_prompt=prompt,
@@ -72,7 +80,7 @@ Structure context:
 
         return f"Priority issues detected across code quality checks:\n{bullet_lines}\n\nNext step: resolve critical/high findings first, then medium findings that impact maintainability and scale."
 
-    def _qwen_review_pass(self, parsed_files: list[dict[str, Any]], persona: str) -> list[AgentFinding]:
+    async def _qwen_review_pass(self, parsed_files: list[dict[str, Any]], persona: str) -> list[AgentFinding]:
         if not self.nim.enabled:
             return []
 
@@ -101,7 +109,7 @@ Code input:
 {json.dumps(sample)}
 """.strip()
 
-            out = self.nim.chat(
+            out = await self.nim.chat(
                 model=settings.nim_model_qwen_review,
                 system_prompt="You are an industrial static code review agent. Return JSON array only.",
                 user_prompt=prompt,

@@ -11,7 +11,7 @@ class StructureService:
     def __init__(self) -> None:
         self.nim = NIMClient()
 
-    def derive(self, parsed_files: list[dict[str, Any]]) -> dict[str, Any]:
+    async def derive(self, parsed_files: list[dict[str, Any]]) -> dict[str, Any]:
         local = self._local_structure(parsed_files)
 
         sample = [
@@ -29,7 +29,7 @@ class StructureService:
             "modules, critical_paths, architectural_risks, dependency_hotspots.\n"
             f"Input: {json.dumps(sample)}"
         )
-        out = self.nim.chat(
+        out = await self.nim.chat(
             model=settings.nim_model_neotron,
             system_prompt="You are a code structure analyst. Return JSON only.",
             user_prompt=prompt,

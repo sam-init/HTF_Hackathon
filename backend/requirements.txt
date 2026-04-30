@@ -7,3 +7,6 @@ httpx
 networkx
 PyJWT[crypto]
 python-dotenv
+pytest
+pytest-asyncio
+httpx

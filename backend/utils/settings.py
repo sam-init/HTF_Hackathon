@@ -35,10 +35,15 @@ class Settings:
 
     cors_origins: tuple[str, ...] = _parse_cors_origins(os.getenv("CORS_ORIGINS", "http://localhost:3000"))
 
-    github_token: str = os.getenv("GITHUB_TOKEN", "")
+    # Webhook signature validation (leave blank to skip)
     github_webhook_secret: str = os.getenv("GITHUB_WEBHOOK_SECRET", "")
-    github_app_id: str = os.getenv("GITHUB_APP_ID", "")
-    github_private_key: str = os.getenv("GITHUB_PRIVATE_KEY", "")
+
+    # Token for posting PR review comments (fine-grained PAT: Pull requests R/W)
+    github_review_token: str = os.getenv("GITHUB_REVIEW_TOKEN", "")
+
+    # Token for pushing README commits (fine-grained PAT: Contents R/W)
+    github_docs_token: str = os.getenv("GITHUB_DOCS_TOKEN", "")
+
     keep_workspaces: bool = os.getenv("KEEP_WORKSPACES", "false").strip().lower() == "true"
 
     nim_api_key: str = os.getenv("NIM_API_KEY", "")

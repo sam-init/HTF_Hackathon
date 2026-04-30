@@ -13,6 +13,10 @@ IMPORT_PATTERNS = {
     ".ts": re.compile(r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\(['\"]([^'\"]+)['\"]\))"),
     ".tsx": re.compile(r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\(['\"]([^'\"]+)['\"]\))"),
     ".jsx": re.compile(r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\(['\"]([^'\"]+)['\"]\))"),
+    ".v": re.compile(r"^\s*`include\s+\"([^\"]+)\"", re.MULTILINE),
+    ".sv": re.compile(r"^\s*`include\s+\"([^\"]+)\"", re.MULTILINE),
+    ".vh": re.compile(r"^\s*`include\s+\"([^\"]+)\"", re.MULTILINE),
+    ".svh": re.compile(r"^\s*`include\s+\"([^\"]+)\"", re.MULTILINE),
 }
 
 
@@ -47,8 +51,10 @@ def _parse_python_symbols(code: str) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 def _parse_generic_symbols(code: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    fn_pattern = re.compile(r"(?:function\s+(\w+)\s*\(|const\s+(\w+)\s*=\s*\(|def\s+(\w+)\s*\()")
-    cls_pattern = re.compile(r"(?:class\s+(\w+))")
+    fn_pattern = re.compile(
+        r"(?:function\s+(\w+)\s*\(|const\s+(\w+)\s*=\s*\(|def\s+(\w+)\s*\(|task\s+(?:automatic\s+)?(\w+)\b)"
+    )
+    cls_pattern = re.compile(r"(?:class\s+(\w+)|module\s+(\w+)\b)")
 
     functions: list[dict[str, Any]] = []
     classes: list[dict[str, Any]] = []
@@ -59,7 +65,8 @@ def _parse_generic_symbols(code: str) -> tuple[list[dict[str, Any]], list[dict[s
             functions.append({"name": name, "line": i, "end_line": i, "args": []})
         c_match = cls_pattern.search(line)
         if c_match:
-            classes.append({"name": c_match.group(1), "line": i, "end_line": i, "methods": []})
+            name = next((g for g in c_match.groups() if g), "anonymous")
+            classes.append({"name": name, "line": i, "end_line": i, "methods": []})
     return functions, classes
 
 
