@@ -97,6 +97,11 @@ function FileSection({ path, content, renderAsMarkdown = false }: {
 
 /* ─── Main component ───────────────────────────────────── */
 export function DocsResults({ data }: { data: DocsResponse }) {
+  const modularDocs = data.modular_docs ?? {};
+  const docstrings = data.docstrings ?? {};
+  const readme = data.readme ?? "README content is unavailable for this run.";
+  const onboardingGuide = data.onboarding_guide ?? "Onboarding guide is unavailable for this run.";
+
   return (
     <section className="grid" style={{ gap: 16 }}>
 
@@ -107,9 +112,9 @@ export function DocsResults({ data }: { data: DocsResponse }) {
           <p style={{ margin: 0, fontSize: 13, color: "var(--ink-2)" }}>
             Persona: <strong style={{ color: "var(--ink)" }}>{data.persona}</strong>
             {" "}·{" "}
-            {Object.keys(data.modular_docs).length} module(s) documented
+            {Object.keys(modularDocs).length} module(s) documented
             {" "}·{" "}
-            {Object.keys(data.docstrings).length} file(s) with docstrings
+            {Object.keys(docstrings).length} file(s) with docstrings
           </p>
         </div>
         {data.doc_rot_detected && (
@@ -124,7 +129,7 @@ export function DocsResults({ data }: { data: DocsResponse }) {
         <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>
           📋 README Output
         </h3>
-        <MarkdownBlock content={data.readme} />
+        <MarkdownBlock content={readme} />
       </div>
 
       {/* ── Onboarding guide ── */}
@@ -140,21 +145,21 @@ export function DocsResults({ data }: { data: DocsResponse }) {
             padding: "16px 20px",
           }}
         >
-          <MarkdownBlock content={data.onboarding_guide} />
+          <MarkdownBlock content={onboardingGuide} />
         </div>
       </div>
 
       {/* ── Modular docs ── */}
-      {Object.keys(data.modular_docs).length > 0 && (
+      {Object.keys(modularDocs).length > 0 && (
         <div className="card">
           <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>
             🗂️ Module-by-Module Documentation
             <span className="tab-count" style={{ marginLeft: 8 }}>
-              {Object.keys(data.modular_docs).length}
+              {Object.keys(modularDocs).length}
             </span>
           </h3>
           <div style={{ display: "grid", gap: 8 }}>
-            {Object.entries(data.modular_docs).map(([path, content]) => (
+            {Object.entries(modularDocs).map(([path, content]) => (
               <FileSection key={path} path={path} content={content} renderAsMarkdown />
             ))}
           </div>
@@ -162,16 +167,16 @@ export function DocsResults({ data }: { data: DocsResponse }) {
       )}
 
       {/* ── Docstrings ── */}
-      {Object.keys(data.docstrings).length > 0 && (
+      {Object.keys(docstrings).length > 0 && (
         <div className="card">
           <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>
             💬 Generated Docstrings
             <span className="tab-count" style={{ marginLeft: 8 }}>
-              {Object.keys(data.docstrings).length}
+              {Object.keys(docstrings).length}
             </span>
           </h3>
           <div style={{ display: "grid", gap: 8 }}>
-            {Object.entries(data.docstrings).map(([path, content]) => (
+            {Object.entries(docstrings).map(([path, content]) => (
               <FileSection key={path} path={path} content={content} />
             ))}
           </div>

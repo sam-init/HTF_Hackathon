@@ -4,7 +4,7 @@ import { GraphPayload, GraphNode } from "@/lib/types";
 import { useMemo } from "react";
 
 /* ─── Types ────────────────────────────────────────────── */
-type Props = { title: string; graph: GraphPayload };
+type Props = { title: string; graph?: GraphPayload | null };
 
 type PositionedNode = GraphNode & { x: number; y: number };
 
@@ -48,8 +48,13 @@ export function GraphPanel({ title, graph }: Props) {
   const MAX_NODES = 30;
   const MAX_EDGES = 45;
 
-  const nodes  = graph.nodes.slice(0, MAX_NODES);
-  const edges  = graph.edges.slice(0, MAX_EDGES);
+  const safeGraph: GraphPayload = {
+    nodes: graph?.nodes ?? [],
+    edges: graph?.edges ?? [],
+  };
+
+  const nodes  = safeGraph.nodes.slice(0, MAX_NODES);
+  const edges  = safeGraph.edges.slice(0, MAX_EDGES);
   const width  = 760;
   const height = 380;
 
@@ -186,9 +191,9 @@ export function GraphPanel({ title, graph }: Props) {
             {kind}
           </span>
         ))}
-        {(graph.nodes.length > MAX_NODES || graph.edges.length > MAX_EDGES) && (
+        {(safeGraph.nodes.length > MAX_NODES || safeGraph.edges.length > MAX_EDGES) && (
           <span style={{ marginLeft: "auto", fontStyle: "italic" }}>
-            Showing sampled view — {graph.nodes.length} total nodes
+            Showing sampled view — {safeGraph.nodes.length} total nodes
           </span>
         )}
       </div>
