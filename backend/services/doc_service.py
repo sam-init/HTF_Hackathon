@@ -87,6 +87,8 @@ class DocumentationService:
         regenerate: bool = False,
         repo_name: str = "",
     ) -> str:
+        from backend.services.persona import persona_style as _persona_style
+
         base = create_readme_template(parsed_files, persona, repo_name=repo_name)
         action = "Regenerated due to doc rot detection." if regenerate else "Generated from current repository state."
 
@@ -113,7 +115,7 @@ class DocumentationService:
         - Structure: {structure_context}
         - Context: {action}
 
-        PERSONA: {persona_style(persona)}
+        PERSONA: {_persona_style(persona)}
 
         TASK: Rewrite the template below into a polished, specific README.md.
         - Use the actual function and class names found in the code
@@ -137,6 +139,8 @@ class DocumentationService:
         return generated or base
 
     def _build_modular_docs(self, parsed_files: list[dict[str, Any]], persona: str) -> dict[str, str]:
+        from backend.services.persona import persona_style as _persona_style
+
         modules: dict[str, str] = {}
         for item in parsed_files:
             symbols = []
@@ -154,7 +158,7 @@ class DocumentationService:
                 f"Classes: {len(item.get('classes', []))}\n"
                 f"Imports: {imports}\n"
                 f"Key symbols:\n{symbol_block}\n"
-                f"Persona note: {persona_style(persona)}\n"
+                f"Persona note: {_persona_style(persona)}\n"
                 f"Suggested next read: start at line 1, then jump to the listed symbols."
             )
         return modules
