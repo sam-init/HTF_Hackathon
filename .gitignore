@@ -11,3 +11,16 @@ dist/
 build/
 *.egg-info/
 .pytest_cache/
+frontend/server
+
+
+frontend/.next
+node_modules/
+frontend/node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.pnpm-store/
