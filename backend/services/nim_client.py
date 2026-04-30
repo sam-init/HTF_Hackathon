@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Conservative timeout for Render free-tier: NIM must respond within 120 s or we skip.
 _NIM_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
+_NIM_MAX_RETRIES = 3
 
 
 class NIMClient:
@@ -50,23 +51,44 @@ class NIMClient:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": temperature,
-            "max_tokens": 4096,
+            # Keep this moderate to reduce Render/NIM timeout and limit pressure.
+            "max_tokens": 2048,
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=_NIM_TIMEOUT) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "NIM HTTP error %s for model %s: %s",
-                exc.response.status_code,
-                model,
-                exc.response.text[:300],
-            )
-            return None
-        except Exception as exc:
-            logger.warning("NIM call failed for model %s: %s", model, exc)
-            return None
+        async with httpx.AsyncClient(timeout=_NIM_TIMEOUT) as client:
+            for attempt in range(1, _NIM_MAX_RETRIES + 1):
+                try:
+                    response = await client.post(url, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                    return data["choices"][0]["message"]["content"]
+                except httpx.TimeoutException as exc:
+                    logger.warning(
+                        "NIM timeout for model %s (attempt %d/%d): %s",
+                        model,
+                        attempt,
+                        _NIM_MAX_RETRIES,
+                        exc,
+                    )
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code
+                    body = exc.response.text[:300]
+                    logger.warning(
+                        "NIM HTTP error %s for model %s (attempt %d/%d): %s",
+                        status,
+                        model,
+                        attempt,
+                        _NIM_MAX_RETRIES,
+                        body,
+                    )
+                    # Retry rate-limited and transient upstream failures.
+                    if status not in {429, 500, 502, 503, 504}:
+                        return None
+                except Exception as exc:
+                    logger.warning("NIM call failed for model %s: %s", model, exc)
+                    return None
+
+                if attempt < _NIM_MAX_RETRIES:
+                    await asyncio.sleep(attempt * 2)
+
+        return None

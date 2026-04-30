@@ -1,7 +1,30 @@
 import { DocsResponse, Persona, ReviewResponse } from "./types";
 
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://localhost:8001";
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
+
+function normalizeErrorMessage(raw: string): string {
+  const msg = raw.trim();
+  const lower = msg.toLowerCase();
+
+  if (lower.includes("http 429") || lower.includes("rate limit") || lower.includes("quota")) {
+    return "NVIDIA model limit reached on Render. Please wait 1-2 minutes and retry, or use a smaller/faster model in backend env vars.";
+  }
+
+  if (lower.includes("failed to fetch") || lower.includes("networkerror")) {
+    return "Unable to reach backend API. Verify Render backend is awake and NEXT_PUBLIC_API_BASE_URL points to the correct .onrender.com URL.";
+  }
+
+  if (lower.includes("timed out") || lower.includes("timeout")) {
+    return "Model request timed out on Render. Retry once, or switch to a faster model (for example qwen2.5-coder-7b) in backend env vars.";
+  }
+
+  if (lower.includes("internal server error")) {
+    return "Backend failed while processing this request. Check Render logs for the matching request and retry.";
+  }
+
+  return msg || "Request failed";
+}
 
 /* ─── Response handler ─────────────────────────────────── */
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -19,7 +42,7 @@ async function handleResponse<T>(res: Response): Promise<T> {
     } catch {
       /* ignore parse errors */
     }
-    throw new Error(message);
+    throw new Error(normalizeErrorMessage(message));
   }
   return res.json() as Promise<T>;
 }
@@ -47,7 +70,7 @@ async function submitAndPoll<T>(
     return job.result as T;
   }
   if (job.status === "error") {
-    throw new Error(job.message || "Job failed");
+    throw new Error(normalizeErrorMessage(job.message || "Job failed"));
   }
 
   // Poll until done
@@ -66,7 +89,7 @@ async function submitAndPoll<T>(
       return status.result as T;
     }
     if (status.status === "error") {
-      throw new Error(status.message || "Job failed");
+      throw new Error(normalizeErrorMessage(status.message || "Job failed"));
     }
     // still "processing" or "queued" — keep polling
   }
