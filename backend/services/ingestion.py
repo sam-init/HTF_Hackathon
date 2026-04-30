@@ -86,19 +86,24 @@ def ingest_from_url(repo_url: str, workspace: Path, github_token: str = "") -> P
         cleaned = repo_url.rstrip("/")
         if cleaned.endswith(".git"):
             cleaned = cleaned[:-4]
-        # Accept both https://github.com/owner/repo and https://github.com/owner/repo/tree/branch
-        parts = cleaned.rstrip("/").split("/")
-        # Find the index of the repo (skip github.com and owner)
+        
+        parts = cleaned.split("/")
         try:
-            owner_repo = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else cleaned
-            # If the URL has extra path components (e.g. /tree/main), take the right ones
             gh_idx = next(i for i, p in enumerate(parts) if "github.com" in p)
-            if len(parts) > gh_idx + 2:
-                owner_repo = f"{parts[gh_idx + 1]}/{parts[gh_idx + 2]}"
+            owner = parts[gh_idx + 1]
+            repo = parts[gh_idx + 2]
+            owner_repo = f"{owner}/{repo}"
+            
+            # Check if a specific branch is provided (e.g. /tree/branch-name)
+            ref = ""
+            if len(parts) > gh_idx + 4 and parts[gh_idx + 3] == "tree":
+                ref = "/" + "/".join(parts[gh_idx + 4:])
+                
         except (StopIteration, IndexError):
             owner_repo = "/".join(cleaned.split("/")[-2:])
+            ref = ""
 
-        url = f"https://api.github.com/repos/{owner_repo}/zipball"
+        url = f"https://api.github.com/repos/{owner_repo}/zipball{ref}"
         headers["Accept"] = "application/vnd.github+json"
         if github_token:
             headers["Authorization"] = f"Bearer {github_token}"
