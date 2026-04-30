@@ -328,7 +328,7 @@ async def _run_pr_review_background(
         return
 
     try:
-        result = await review_service.review(parsed_files, persona="Backend Developer")
+        result = await review_service.review_pr_fast(parsed_files, persona="Backend Developer")
     except Exception as exc:
         logger.exception("PR review: review_service failed for %s#%d: %s", repo_name, pr_number, exc)
         return
