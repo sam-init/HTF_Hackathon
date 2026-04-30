@@ -18,17 +18,17 @@ class DocumentationService:
         self.nim = NIMClient()
         self.structure = StructureService()
 
-    def generate(self, parsed_files: list[dict[str, Any]], persona: str, repo_name: str = "") -> dict[str, Any]:
+    async def generate(self, parsed_files: list[dict[str, Any]], persona: str, repo_name: str = "") -> dict[str, Any]:
         index_stats = self.rag.index_repository(parsed_files)
         structure_context = self.structure.derive(parsed_files)
 
         docstrings = self._generate_docstrings(parsed_files, persona)
-        readme = self._generate_readme(parsed_files, persona, structure_context, repo_name=repo_name)
+        readme = await self._generate_readme(parsed_files, persona, structure_context, repo_name=repo_name)
 
         existing_docs = "\n\n".join(item["content"] for item in parsed_files if item["path"].endswith(".md"))
         doc_rot = detect_doc_rot(parsed_files, existing_docs)
         if doc_rot:
-            readme = self._generate_readme(parsed_files, persona, structure_context, regenerate=True, repo_name=repo_name)
+            readme = await self._generate_readme(parsed_files, persona, structure_context, regenerate=True, repo_name=repo_name)
 
         modular_docs = self._build_modular_docs(parsed_files, persona)
 
@@ -70,7 +70,7 @@ class DocumentationService:
 
         return output
 
-    def _generate_readme(
+    async def _generate_readme(
         self,
         parsed_files: list[dict[str, Any]],
         persona: str,
@@ -119,7 +119,7 @@ class DocumentationService:
         {base}
         """.strip()
 
-        generated = self.nim.chat(
+        generated = await self.nim.chat(
             model=settings.nim_model_qwen_docs,
             system_prompt="You are a senior technical writer producing real, repo-specific documentation. Never use placeholder text.",
             user_prompt=prompt,

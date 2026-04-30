@@ -120,10 +120,10 @@ def _extract_repo_name(repo_url: str) -> str | None:
 
 # ── Background job workers ────────────────────────────────────────────────────
 
-def _job_review(job_id: str, persona: str, workspace: Path, repo_root: Path) -> None:
+async def _job_review(job_id: str, persona: str, workspace: Path, repo_root: Path) -> None:
     try:
         parsed_files = _parse_workspace(repo_root)
-        result = review_service.review(parsed_files, persona)
+        result = await review_service.review(parsed_files, persona)
         run_id = str(uuid.uuid4())
         response = ReviewResponse(run_id=run_id, persona=persona, **result)  # type: ignore[arg-type]
         RUN_CACHE[run_id] = response.model_dump()
@@ -136,7 +136,7 @@ def _job_review(job_id: str, persona: str, workspace: Path, repo_root: Path) -> 
             cleanup_workspace(workspace)
 
 
-def _job_docs(
+async def _job_docs(
     job_id: str,
     persona: str,
     workspace: Path,
@@ -145,7 +145,7 @@ def _job_docs(
 ) -> None:
     try:
         parsed_files = _parse_workspace(repo_root)
-        result = doc_service.generate(parsed_files, persona)
+        result = await doc_service.generate(parsed_files, persona)
         run_id = str(uuid.uuid4())
         response = DocsResponse(run_id=run_id, persona=persona, **result)  # type: ignore[arg-type]
         RUN_CACHE[run_id] = response.model_dump()
@@ -244,7 +244,7 @@ async def docs_upload(
 
 # ── GitHub webhook ────────────────────────────────────────────────────────────
 
-def _run_pr_review_background(
+async def _run_pr_review_background(
     repo_name: str,
     pr_number: int,
     run_id: str,
@@ -262,7 +262,7 @@ def _run_pr_review_background(
         return
 
     try:
-        result = review_service.review(parsed_files, persona="Backend Developer")
+        result = await review_service.review(parsed_files, persona="Backend Developer")
     except Exception as exc:
         logger.exception("PR review: review_service failed for %s#%d: %s", repo_name, pr_number, exc)
         return

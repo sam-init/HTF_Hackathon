@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -8,6 +9,9 @@ import httpx
 from backend.utils.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# Conservative timeout for Render free-tier: NIM must respond within 120 s or we skip.
+_NIM_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
 
 
 class NIMClient:
@@ -24,7 +28,7 @@ class NIMClient:
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    def chat(
+    async def chat(
         self,
         model: str,
         system_prompt: str,
@@ -50,11 +54,8 @@ class NIMClient:
         }
 
         try:
-            # Increased read timeout to 600s (10 mins) — the new richer README prompt
-            # causes the model to write much more content, which takes longer to stream back.
-            timeout = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=5.0)
-            with httpx.Client(timeout=timeout) as client:
-                response = client.post(url, headers=headers, json=payload)
+            async with httpx.AsyncClient(timeout=_NIM_TIMEOUT) as client:
+                response = await client.post(url, headers=headers, json=payload)
                 response.raise_for_status()
             data = response.json()
             return data["choices"][0]["message"]["content"]

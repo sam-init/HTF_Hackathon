@@ -20,15 +20,15 @@ class ReviewService:
         self.nim = NIMClient()
         self.structure = StructureService()
 
-    def review(self, parsed_files: list[dict[str, Any]], persona: str) -> dict[str, Any]:
+    async def review(self, parsed_files: list[dict[str, Any]], persona: str) -> dict[str, Any]:
         index_stats = self.rag.index_repository(parsed_files)
         structure_context = self.structure.derive(parsed_files)
         findings = self.orchestrator.run(parsed_files, persona)
-        findings.extend(self._qwen_review_pass(parsed_files, persona))
+        findings.extend(await self._qwen_review_pass(parsed_files, persona))
         findings = self._dedupe_findings(findings)
         findings = self._apply_persona(findings, persona)
 
-        summary = self._summarize_findings(findings, persona, structure_context)
+        summary = await self._summarize_findings(findings, persona, structure_context)
         return {
             "findings": [f.__dict__ for f in findings],
             "summary": summary,
@@ -41,7 +41,7 @@ class ReviewService:
             },
         }
 
-    def _summarize_findings(self, findings: list[Any], persona: str, structure_context: dict[str, Any]) -> str:
+    async def _summarize_findings(self, findings: list[Any], persona: str, structure_context: dict[str, Any]) -> str:
         if not findings:
             return "No high-confidence issues were detected. The current changes appear stable under configured review checks."
 
@@ -60,7 +60,7 @@ Structure context:
 {json.dumps(structure_context)}
 """.strip()
 
-        generated = self.nim.chat(
+        generated = await self.nim.chat(
             model=settings.nim_model_qwen_review,
             system_prompt="You are a senior staff engineer producing PR review summaries.",
             user_prompt=prompt,
@@ -72,7 +72,7 @@ Structure context:
 
         return f"Priority issues detected across code quality checks:\n{bullet_lines}\n\nNext step: resolve critical/high findings first, then medium findings that impact maintainability and scale."
 
-    def _qwen_review_pass(self, parsed_files: list[dict[str, Any]], persona: str) -> list[AgentFinding]:
+    async def _qwen_review_pass(self, parsed_files: list[dict[str, Any]], persona: str) -> list[AgentFinding]:
         if not self.nim.enabled:
             return []
 
@@ -101,7 +101,7 @@ Code input:
 {json.dumps(sample)}
 """.strip()
 
-            out = self.nim.chat(
+            out = await self.nim.chat(
                 model=settings.nim_model_qwen_review,
                 system_prompt="You are an industrial static code review agent. Return JSON array only.",
                 user_prompt=prompt,
