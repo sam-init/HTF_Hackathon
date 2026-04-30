@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -37,6 +38,7 @@ class NIMClient:
         temperature: float = 0.2,
     ) -> str | None:
         if not self.enabled:
+            logger.info("NIM disabled (missing API key) | model=%s", model)
             return None
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -57,38 +59,49 @@ class NIMClient:
 
         async with httpx.AsyncClient(timeout=_NIM_TIMEOUT) as client:
             for attempt in range(1, _NIM_MAX_RETRIES + 1):
+                started = time.perf_counter()
+                logger.info("NIM request started | model=%s attempt=%d/%d", model, attempt, _NIM_MAX_RETRIES)
                 try:
                     response = await client.post(url, headers=headers, json=payload)
                     response.raise_for_status()
                     data = response.json()
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    logger.info("NIM request succeeded | model=%s attempt=%d elapsed_ms=%d", model, attempt, elapsed_ms)
                     return data["choices"][0]["message"]["content"]
                 except httpx.TimeoutException as exc:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
                     logger.warning(
-                        "NIM timeout for model %s (attempt %d/%d): %s",
+                        "NIM timeout for model %s (attempt %d/%d) elapsed_ms=%d: %s",
                         model,
                         attempt,
                         _NIM_MAX_RETRIES,
+                        elapsed_ms,
                         exc,
                     )
                 except httpx.HTTPStatusError as exc:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
                     status = exc.response.status_code
                     body = exc.response.text[:300]
                     logger.warning(
-                        "NIM HTTP error %s for model %s (attempt %d/%d): %s",
+                        "NIM HTTP error %s for model %s (attempt %d/%d) elapsed_ms=%d: %s",
                         status,
                         model,
                         attempt,
                         _NIM_MAX_RETRIES,
+                        elapsed_ms,
                         body,
                     )
                     # Retry rate-limited and transient upstream failures.
                     if status not in {429, 500, 502, 503, 504}:
+                        logger.warning("NIM request aborted (non-retriable status) | model=%s status=%s", model, status)
                         return None
                 except Exception as exc:
                     logger.warning("NIM call failed for model %s: %s", model, exc)
                     return None
 
                 if attempt < _NIM_MAX_RETRIES:
+                    logger.info("NIM retry scheduled | model=%s next_attempt=%d", model, attempt + 1)
                     await asyncio.sleep(attempt * 2)
 
+        logger.warning("NIM request exhausted retries | model=%s", model)
         return None

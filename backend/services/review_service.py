@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from agents.base_agent import AgentFinding, SEVERITY_ORDER
@@ -12,6 +13,8 @@ from backend.services.structure_service import StructureService
 from backend.utils.settings import settings
 from rag.rag_pipeline import RAGPipeline
 
+logger = logging.getLogger(__name__)
+
 
 class ReviewService:
     def __init__(self, rag: RAGPipeline) -> None:
@@ -21,14 +24,19 @@ class ReviewService:
         self.structure = StructureService()
 
     async def review(self, parsed_files: list[dict[str, Any]], persona: str) -> dict[str, Any]:
+        logger.info("Review pipeline started | files=%d persona=%s", len(parsed_files), persona)
         index_stats = self.rag.index_repository(parsed_files)
         structure_context = self.structure.derive(parsed_files)
+        logger.info("Review phase | running_rule_based_agents")
         findings = self.orchestrator.run(parsed_files, persona)
+        logger.info("Review phase | running_llm_agents")
         findings.extend(await self._qwen_review_pass(parsed_files, persona))
         findings = self._dedupe_findings(findings)
         findings = self._apply_persona(findings, persona)
+        logger.info("Review phase | summarizing_findings count=%d", len(findings))
 
         summary = await self._summarize_findings(findings, persona, structure_context)
+        logger.info("Review pipeline completed | findings=%d persona=%s", len(findings), persona)
         return {
             "findings": [f.__dict__ for f in findings],
             "summary": summary,

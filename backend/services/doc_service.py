@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from backend.services.nim_client import NIMClient
@@ -11,6 +12,8 @@ from docs.readme_generator import create_onboarding_guide, create_readme_templat
 from docs.rot_detector import detect_doc_rot
 from rag.rag_pipeline import RAGPipeline
 
+logger = logging.getLogger(__name__)
+
 
 class DocumentationService:
     def __init__(self, rag: RAGPipeline) -> None:
@@ -19,19 +22,25 @@ class DocumentationService:
         self.structure = StructureService()
 
     async def generate(self, parsed_files: list[dict[str, Any]], persona: str, repo_name: str = "") -> dict[str, Any]:
+        logger.info("Docs pipeline started | files=%d persona=%s repo=%s", len(parsed_files), persona, repo_name or "unknown")
         index_stats = self.rag.index_repository(parsed_files)
         structure_context = self.structure.derive(parsed_files)
 
+        logger.info("Docs phase | generating_docstrings")
         docstrings = self._generate_docstrings(parsed_files, persona)
+        logger.info("Docs phase | generating_readme")
         readme = await self._generate_readme(parsed_files, persona, structure_context, repo_name=repo_name)
 
         existing_docs = "\n\n".join(item["content"] for item in parsed_files if item["path"].endswith(".md"))
         doc_rot = detect_doc_rot(parsed_files, existing_docs)
         if doc_rot:
+            logger.info("Docs phase | doc_rot_detected=true regenerating_readme")
             readme = await self._generate_readme(parsed_files, persona, structure_context, regenerate=True, repo_name=repo_name)
 
+        logger.info("Docs phase | building_modular_docs_and_graphs")
         modular_docs = self._build_modular_docs(parsed_files, persona)
 
+        logger.info("Docs pipeline completed | files=%d persona=%s", len(parsed_files), persona)
         return {
             "docstrings": docstrings,
             "readme": readme,
